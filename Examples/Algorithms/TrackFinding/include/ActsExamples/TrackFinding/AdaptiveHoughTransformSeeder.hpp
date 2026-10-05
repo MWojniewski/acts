@@ -27,6 +27,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_set>
 
 namespace ActsExamples {
 
@@ -72,6 +73,21 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
                        // this with fieldCorrection function
                        // This 3e-4 comes from the 2T field when converted to
                        // units of GeV / (c*mm*e)
+  };
+
+  struct SeedCandidate{
+    std::vector<unsigned> indices;
+  };
+
+  // hash function to prevent duplication
+  struct VectorHash {
+    std::size_t operator()(const std::vector<unsigned>& v) const {
+        std::size_t seed = v.size();
+        for(auto& i : v) {
+            seed ^= i + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
   };
 
   // information that is needed for each measurement
@@ -170,7 +186,7 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
   /// @param measurements are input measurements
   void processStackZCotTheta(
       std::vector<Acts::Experimental::HoughAccumulatorSection> &input,
-      std::vector<Acts::Experimental::HoughAccumulatorSection> &output,
+      std::vector<SeedCandidate> &output,
       const std::vector<PreprocessedMeasurement> &measurements) const;
 
   void processStackZCotThetaSplit(
@@ -184,7 +200,7 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
   /// @param measurements are input measurements
   void makeSeeds(
       SeedContainer &seeds,
-      const std::vector<Acts::Experimental::HoughAccumulatorSection> &solutions,
+      const std::vector<SeedCandidate> &solutions,
       const std::vector<PreprocessedMeasurement> &measurements) const;
 
   LineFunctor m_qOverPtPhiLineParams = [this](const PreprocessedMeasurement &m,

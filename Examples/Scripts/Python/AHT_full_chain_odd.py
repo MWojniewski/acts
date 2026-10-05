@@ -350,13 +350,12 @@ if args.reco:
     aht_config.noiseThreshold = args.aht_noise
     
     aht_config.phiMinBinSize = 3.14 / (2.0 * 257.0)
-    aht_config.qOverPtMinBinSize = 1.1 / (2.0 * 257.0)
+    aht_config.qOverPtMinBinSize = 4 * 0.9 / (1.0 * 257.0)
     aht_config.qOverPtMin = 1.1
     aht_config.doSecondPhase = True
     aht_config.zMinBinSize = 1 * u.mm
     aht_config.cotThetaMinBinSize = 0.1
     aht_config.deduplicate = True
-
     addSeeding(
         s,
         trackingGeometry,

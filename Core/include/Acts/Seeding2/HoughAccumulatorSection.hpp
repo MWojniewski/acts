@@ -66,6 +66,9 @@ class HoughAccumulatorSection {
   /// @param yBegin - new bottom side
   void updateDimensions(float xw, float yw, float xBegin, float yBegin);
 
+  /// @brief Override the division level (e.g. when changing search space)
+  void setDivisionLevel(std::uint32_t divLvl){m_divisionLevel=divLvl;}
+
   /// @brief keep indices and update parameters of the box by scalling
   /// @param xs - scale in x direction, if bigger than 1 the size increases
   /// @param ys - scale in y direction
@@ -310,11 +313,11 @@ struct HoughExplorationOptions {
 
   /// expand in x direction (default by 10%) if Expand
   /// Decision is made
-  float expandX = 1.1f;
+  float expandX = 1.0f;
 
   /// expand in y direction (default by 10%) if Expand
   /// Decision is made
-  float expandY = 1.1f;
+  float expandY = 1.5f;
 
   /// @brief functional, that given measurement and argument in HT space x return y
   using LineFunctor = std::function<float(const Measurement &, float)>;
@@ -366,6 +369,9 @@ void exploreHoughParametersSpace(
       newSections.push_back(thisSection.left());
       newSections.push_back(thisSection.right());
     }
+
+    if (newSections.empty())
+      continue;
 
     if (thisSection.decision() ==
         HoughAccumulatorSection::Decision::DrillAndExpand) {
