@@ -145,13 +145,13 @@ parser.add_argument(
     action=argparse.BooleanOptionalAction,
 )
 parser.add_argument(
-    "--aht-max-division", help="Maksymalny poziom podzialu AHT", type=int, default=8
+    "--aht-max-division", help="Maximal divlvl for classic AHT Drill action", type=int, default=8
 )
 parser.add_argument(
-    "--aht-threshold", help="Wartosc threshold dla AHT", type=int, default=3
+    "--aht-threshold", help="Threshold value for AHT ExploreParameterSpace", type=int, default=3
 )
 parser.add_argument(
-    "--aht-noise", help="Wartosc noiseThreshold dla AHT", type=int, default=12
+    "--aht-noise", help="noiseThreshold value for AHT ExploreParameterSpace", type=int, default=12
 )
 
 
