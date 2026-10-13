@@ -43,11 +43,11 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
     std::shared_ptr<const Acts::TrackingGeometry> trackingGeometry;
     float phiWrap =
         0.1f;  // wrap size around angle domain limits (min pT dependent)
-    float qOverPtMin = 0.9f;  // min q/pt, -1/1 GeV
+    float qOverPtMin = 1.1f;  // min q/pt
 
-    float qOverPtMinBinSize = 0.01f;  // minimal size of pT bin that the
+    float qOverPtMinBinSize = 16 * 0.9 / 257.0;  // minimal size of pT bin that the
                                       // algorithm should not go beyond (in GeV)
-    float phiMinBinSize = 0.01f;  // minimal size of phi bin that the algorithm
+    float phiMinBinSize = 2 * 3.14 / 257.0;  // minimal size of phi bin that the algorithm
                                   // should not go beyond
     float zRange = 200;           // range in z
     float cotThetaRange = 10;     // range in cotTheta
@@ -58,7 +58,7 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
     float cotThetaMinBinSize = 0.1f;  // minimal size of cot(theta) bin that
                                       // the algorithm should not go beyond
     unsigned threshold =
-        4;  // number of lines passing section for it to be still considered
+        3;  // number of lines passing section for it to be still considered
     unsigned noiseThreshold = 12;  // number of lines passing section at the
                                    // final split to consider it noise
 
@@ -66,20 +66,33 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
                                 // find less solutions
     bool deduplicate = true;    // when adding solutions try avoiding duplicates
 
-    uint32_t maxDivision = 8;    // Level of maximal section division
+    unsigned maxDivision = 6;    // Level of maximal section division
 
     double inverseA =
         1.0 / 3.0e-4;  // Assume B = 2T constant. Can apply corrections to
                        // this with fieldCorrection function
                        // This 3e-4 comes from the 2T field when converted to
                        // units of GeV / (c*mm*e)
+    
+    unsigned div_lvl_to_save = 0;
+
+    unsigned sections_number_to_save = 0;
   };
 
   struct SeedCandidate{
-    std::vector<unsigned> indices;
+    std::array<unsigned,3> indices;
   };
 
-  // hash function to prevent duplication
+  struct Phase1Candidate{
+    std::vector<unsigned> indices;
+    float zMin;
+    float zWidth;
+    float cotThetaMin;
+    float cotThetaWidth;
+  };
+
+  // hash functions to prevent duplication
+
   struct VectorHash {
     std::size_t operator()(const std::vector<unsigned>& v) const {
         std::size_t seed = v.size();
@@ -90,17 +103,29 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
     }
   };
 
+  struct Array3Hash {
+    std::size_t operator()(const std::array<unsigned, 3>& a) const noexcept {
+        std::size_t seed = 3;
+        for (auto i : a) {
+            seed ^= i + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+  };
+
   // information that is needed for each measurement
   struct PreprocessedMeasurement {
     /// Construct the measurement
     /// @param inverseR inverse of radius of the SP
+    /// @param radius radius of the SP
     /// @param phiAngle azimuthal angle of the SP
     /// @param zpos z position of the SP
     /// @param spacePointIndex index of the original space point, needed to construct seeds in the end
-    PreprocessedMeasurement(double inverseR, double phiAngle, double zpos,
+    PreprocessedMeasurement(double inverseR, double radius, double phiAngle, double zpos,
                             SpacePointIndex spacePointIndex)
-        : invr(inverseR), phi(phiAngle), z(zpos), sp(spacePointIndex) {}
+        : invr(inverseR), r(radius), phi(phiAngle), z(zpos), sp(spacePointIndex) {}
     double invr{};
+    double r{};
     double phi{};
     double z{};
     SpacePointIndex sp{};
@@ -177,6 +202,11 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
       std::vector<Acts::Experimental::HoughAccumulatorSection> &output,
       const std::vector<PreprocessedMeasurement> &measurements) const;
 
+void processQOverPtPhi_SlidingWindow(
+    const std::vector<Acts::Experimental::HoughAccumulatorSection> &input,
+      std::vector<Phase1Candidate> &output,
+      const std::vector<PreprocessedMeasurement> &measurements) const;
+
   /// @brief process sections on the stack
   /// and qualifying them for further division, discarding them or moving to
   /// solutions vector
@@ -185,7 +215,7 @@ class AdaptiveHoughTransformSeeder final : public IAlgorithm {
   /// @param solutions is the output set of sections
   /// @param measurements are input measurements
   void processStackZCotTheta(
-      std::vector<Acts::Experimental::HoughAccumulatorSection> &input,
+      std::vector<Phase1Candidate> &input,
       std::vector<SeedCandidate> &output,
       const std::vector<PreprocessedMeasurement> &measurements) const;
 

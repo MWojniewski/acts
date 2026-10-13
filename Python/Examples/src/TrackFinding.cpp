@@ -103,7 +103,7 @@ void addTrackFinding(py::module& mex) {
       inputSpacePoints, outputSeeds, trackingGeometry, qOverPtMin,
       qOverPtMinBinSize, phiMinBinSize, threshold, noiseThreshold, deduplicate,
       inverseA, doSecondPhase, zRange, cotThetaRange, cotThetaMinBinSize,
-      zMinBinSize,maxDivision);
+      zMinBinSize,maxDivision,sections_number_to_save,div_lvl_to_save);
 
   ACTS_PYTHON_DECLARE_ALGORITHM(MuonHoughSeeder, mex, "MuonHoughSeeder",
                                 inTruthSegments, inSpacePoints, outHoughMax,

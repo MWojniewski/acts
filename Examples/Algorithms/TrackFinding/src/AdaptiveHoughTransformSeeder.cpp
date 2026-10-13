@@ -60,7 +60,7 @@ ProcessCode AdaptiveHoughTransformSeeder::execute(
     const AlgorithmContext &ctx) const {
   const SpacePointContainer &spacePoints = m_inputSpacePoints(ctx);
 
-  ACTS_INFO("Starting maxDivision value: " << m_cfg.maxDivision);
+  ACTS_VERBOSE("Starting maxDivision value: " << m_cfg.maxDivision);
   // get inputs
   std::vector<PreprocessedMeasurement> measurements;
   preparePreprocessedMeasurements(spacePoints, measurements);
@@ -108,10 +108,11 @@ ProcessCode AdaptiveHoughTransformSeeder::execute(
   ACTS_DEBUG("past StackQOverPtPhi stack1 size "
              << stack1.size() << " stack2 size " << stack2.size());
 
-  if (m_cfg.deduplicate) {
-    Acts::ScopedTimer st("deduplication", logger());
-    deduplicate(stack1);
-    ACTS_DEBUG("past deduplication " << stack1.size());
+  std::vector<Phase1Candidate> phase1Candidates;
+  {
+    Acts::ScopedTimer st("SlidingWindowQPtPhi",logger());
+    processQOverPtPhi_SlidingWindow(stack1,phase1Candidates,measurements);
+    ACTS_DEBUG("Sliding Window Q/pT-Phi generated " << phase1Candidates.size() << " candidates.");
   }
 
   // additional stack for smaller structer as HoughAccumulatorSection is no longer needed
@@ -121,15 +122,9 @@ ProcessCode AdaptiveHoughTransformSeeder::execute(
   if (m_cfg.doSecondPhase) {
     Acts::ScopedTimer st("secondPhase", logger());
 
-    for (auto &section : stack1) {
-      section.updateDimensions(section.history(zSplitWidthIndex),
-                               section.history(cotThetaSplitWidthIndex),
-                               section.history(zSplitMinIndex),
-                               section.history(cotThetaSplitMinIndex));
-    }
-    processStackZCotTheta(stack1, stack3, measurements);
+    processStackZCotTheta(phase1Candidates, stack3, measurements);
     ACTS_DEBUG("past StackZCotTheta stack1 size "
-               << stack1.size() << " stack3 size " << stack3.size());
+               << phase1Candidates.size() << " stack3 size " << stack3.size());
   }
 
   // vector for final solutions with or without second phase
@@ -139,9 +134,9 @@ ProcessCode AdaptiveHoughTransformSeeder::execute(
     finalSolutions = std::move(stack3);
   }
   else{
-    finalSolutions.reserve(stack1.size());
-    for (auto& section : stack1){
-      finalSolutions.push_back({std::move(section.indices())});
+    finalSolutions.reserve(phase1Candidates.size());
+    for (auto& section : phase1Candidates){
+      finalSolutions.push_back({ {section.indices[0], section.indices[1], section.indices[2]} });
     }
   }
 
@@ -168,16 +163,17 @@ void AdaptiveHoughTransformSeeder::preparePreprocessedMeasurements(
                           << m_cfg.inputSpacePoints << "\"");
 
   for (const ConstSpacePointProxy sp : spacePoints) {
+    const float r_val=sp.r();
     const float phi = std::atan2(sp.y(), sp.x());
-    const float invr = 1.0f / sp.r();
-    measurements.emplace_back(invr, phi, sp.z(), sp.index());
+    const float invr = 1.0f / r_val;
+    measurements.emplace_back(invr, r_val, phi, sp.z(), sp.index());
     // wrap phi by duplicating some seeds
     if (phi < -std::numbers::pi + m_cfg.phiWrap * std::numbers::pi) {
-      measurements.emplace_back(invr, phi + 2 * std::numbers::pi, sp.z(),
+      measurements.emplace_back(invr, r_val, phi + 2 * std::numbers::pi, sp.z(),
                                 sp.index());
     }
     if (phi > std::numbers::pi - m_cfg.phiWrap * std::numbers::pi) {
-      measurements.emplace_back(invr, phi - 2 * std::numbers::pi, sp.z(),
+      measurements.emplace_back(invr, r_val, phi - 2 * std::numbers::pi, sp.z(),
                                 sp.index());
     }
   }
@@ -190,13 +186,13 @@ void AdaptiveHoughTransformSeeder::fillStackPhiSplit(
     std::vector<Acts::Experimental::HoughAccumulatorSection> &stack,
     const std::vector<PreprocessedMeasurement> &measurements) const {
   Acts::ScopedTimer st("splitInQuadrants", logger());
-  const int nSplits = 8;
+  const int nSplits = 215;
   const auto wedgeWidth = static_cast<float>(2.0 * std::numbers::pi / nSplits);
 
   for (int phiIndex = 0; phiIndex < nSplits; phiIndex++) {
     const auto startPhi = static_cast<float>(
         wedgeWidth * static_cast<float>(phiIndex) - std::numbers::pi);
-    stack.emplace_back(1.2f * wedgeWidth, 2.0f * m_cfg.qOverPtMin, startPhi,
+    stack.emplace_back(1.05f * wedgeWidth, 2.0f * m_cfg.qOverPtMin, startPhi,
                        -m_cfg.qOverPtMin);
     stack.back().indices().resize(measurements.size());
     std::iota(std::begin(stack.back().indices()),
@@ -246,11 +242,42 @@ void AdaptiveHoughTransformSeeder::processStackQOverPtPhi(
           return Discard;
         }
 
-        if (section.count() < (m_cfg.noiseThreshold) &&
-            !passIntersectionsCheck(section, mes, opt.lineFunctor,
-                                    cfg.threshold * (cfg.threshold - 1)/2)) {
-          sStat[section.divisionLevel()].discardedByCrossingCut ++;
-          return Discard;
+        if (section.divisionLevel()==m_cfg.div_lvl_to_save){
+          static unsigned section_id = 0;
+          if (section_id<m_cfg.sections_number_to_save){
+            section_id++;
+
+            std::string file_name="8_10_2026_AHT_exploring/QPt_phisplit_215_lvl";
+            file_name.append(std::to_string(section.divisionLevel()));
+            file_name.append(".csv");
+            std::ofstream outFile(file_name,std::ios::app);
+
+            if(section_id==1){
+              outFile << "section_id,xBegin,xSize,yBegin,ySize,meas_idx,invr,phi,slope,intercept,yLeft,yRight\n";
+            }
+
+            float xL = section.xBegin();
+            float xR = section.xBegin()+section.xSize();
+            float yB = section.yBegin();
+
+            for (unsigned idx: section.indices()){
+              const auto &m = mes[idx];
+
+              float slope = m.invr * cfg.inverseA;
+              float intercept = -m.invr * m.phi * cfg.inverseA;
+
+              float yLeft = slope * xL + intercept;
+              float yRight = slope * xR + intercept;
+
+              outFile << section_id << "," 
+                                << xL << "," << section.xSize() << "," 
+                                << yB << "," << section.ySize() << ","
+                                << idx << "," << m.invr << "," << m.phi << ","
+                                << slope << "," << intercept << ","
+                                << yLeft << "," << yRight << "\n";
+            }
+            outFile.close();
+          }
         }
 
         if (section.divisionLevel() <= cfg.maxDivision-1) {
@@ -270,7 +297,7 @@ void AdaptiveHoughTransformSeeder::processStackQOverPtPhi(
         sStat[section.divisionLevel()].drilledArea +=
             section.xSize() * section.ySize();
         sStat[section.divisionLevel()].nDrilledSections_extra ++;
-        return DrillAndExpand;
+        return Drill;
       };
 
   exploreHoughParametersSpace(input, measurements, opt, output);
@@ -279,14 +306,14 @@ void AdaptiveHoughTransformSeeder::processStackQOverPtPhi(
       [](unsigned sum, const Acts::Experimental::HoughAccumulatorSection &s) {
         return sum + s.count();
       });
-  ACTS_DEBUG("Phi - qOverPt scan finds "
+  ACTS_VERBOSE("Phi - qOverPt scan finds "
              << output.size() << " solutions, included measurements " << nl);
-  ACTS_DEBUG("size " << sStat.size());
-  ACTS_DEBUG("===========================================================");
-  ACTS_DEBUG(" [Q/pT - Phi] process stats ");
-  ACTS_DEBUG("===========================================================");
+  ACTS_VERBOSE("size " << sStat.size());
+  ACTS_VERBOSE("===========================================================");
+  ACTS_VERBOSE(" [Q/pT - Phi] process stats ");
+  ACTS_VERBOSE("===========================================================");
   for (const auto &[div, stats] : sStat) {
-    ACTS_DEBUG("Lvl: " << div 
+    ACTS_VERBOSE("Lvl: " << div 
               << " | Cut(Thresh): " << stats.discardedByThresholdCut  
               << " | Cut(Cross): " << stats.discardedByCrossingCut 
               << " | Area(Drill): " << stats.drilledArea
@@ -296,20 +323,20 @@ void AdaptiveHoughTransformSeeder::processStackQOverPtPhi(
               << " | nSections(Accept): " << stats.nAcceptedSections
               << " | nLines(Accept): " << stats.nAcceptedLines);
   }
-  ACTS_DEBUG("===========================================================");
+  ACTS_VERBOSE("===========================================================");
 }
 
 void AdaptiveHoughTransformSeeder::processStackZCotTheta(
-    std::vector<Acts::Experimental::HoughAccumulatorSection> &input,
+    std::vector<Phase1Candidate> &input,
     std::vector<SeedCandidate> &output,
     const std::vector<PreprocessedMeasurement> &measurements) const {
     
     Acts::ScopedTimer st("processStackZCotTheta", logger());
 
     // set created to get rid of the duplication
-    std::unordered_set<std::vector<unsigned>, VectorHash> unique_clusters;
+    std::unordered_set<std::array<unsigned,3>, Array3Hash> unique_clusters;
 
-    const float max_y_spread = m_cfg.cotThetaMinBinSize * 2.5f;
+    const float max_y_spread = m_cfg.cotThetaMinBinSize * 1.5f;
     const unsigned req_lines = m_cfg.threshold;
     struct LinePoint {
         float y;
@@ -319,44 +346,37 @@ void AdaptiveHoughTransformSeeder::processStackZCotTheta(
         }
     };
 
-    for (const auto &section : input) {
-        const unsigned cnt = section.count();
+    for (const auto &candidate : input) {
+        const unsigned cnt = candidate.indices.size();
         
         if (cnt < req_lines) {
             continue;
         }
 
-        const float xLeft = section.xBegin();
-        const float xRight = xLeft + section.xSize();
+        const float xLeft = candidate.zMin;
+        const float xRight = xLeft + candidate.zWidth;
 
-        // 5 x point option
-        // const float xMid = xLeft + section.xSize() * 0.5f;
-        // const float xLM = (xLeft + xMid) / 2;
-        // const float xRM = (xRight + xMid) / 2; 
-        // const float check_points[5] = {xLeft,xLM,xMid,xRM,xRight};
-        
-        // 6 x point option
-        // const float xM1 = xLeft+(xRight-xLeft)/5*1;
-        // const float xM2 = xLeft+(xRight-xLeft)/5*2;
-        // const float xM3 = xLeft+(xRight-xLeft)/5*3;
-        // const float xM4 = xLeft+(xRight-xLeft)/5*4;
-        // const float check_points[6] = {xLeft,xM1, xM2,xM3, xM4, xRight};
-
-        // 7 x point option
-        const float xM1 = xLeft+(xRight-xLeft)/6*1;
-        const float xM2 = xLeft+(xRight-xLeft)/6*2;
-        const float xM3 = xLeft+(xRight-xLeft)/6*3;
-        const float xM4 = xLeft+(xRight-xLeft)/6*4;
-        const float xM5 = xLeft+(xRight-xLeft)/6*5;
-        const float check_points[7] = {xLeft,xM1, xM2,xM3, xM4, xM5, xRight};
+        // 9 x point option
+        const float xM1 = xLeft+(xRight-xLeft)/8*1;
+        const float xM2 = xLeft+(xRight-xLeft)/8*2;
+        const float xM3 = xLeft+(xRight-xLeft)/8*3;
+        const float xM4 = xLeft+(xRight-xLeft)/8*4;
+        const float xM5 = xLeft+(xRight-xLeft)/8*5;
+        const float xM6 = xLeft+(xRight-xLeft)/8*6;
+        const float xM7 = xLeft+(xRight-xLeft)/8*7;
+        const float check_points[9] = {xLeft,xM1, xM2,xM3, xM4, xM5, xM6, xM7, xRight};
 
         std::vector<LinePoint> yVals(cnt);
 
-        // loop calculating yValue for each line in selected x points
-        // then it checks if section contains clusters which we take as solutions
+        double min_r=1,max_r=1;
+        unsigned cluster_end_idx=0;
+        bool valid_r_spread=0;
+        unsigned idx_max=0,idx_min=0, idx_mid=0;
+        unsigned meas_idx = -1;
+
         for (float x_check : check_points) {
             for (unsigned i = 0; i < cnt; ++i) {
-                unsigned meas_idx = section.indices()[i];
+                meas_idx = candidate.indices[i];
                 const auto &m = measurements[meas_idx];
                 
                 yVals[i].y = -m.invr * x_check + m.z * m.invr;
@@ -364,27 +384,53 @@ void AdaptiveHoughTransformSeeder::processStackZCotTheta(
             }
 
             std::sort(yVals.begin(), yVals.end());
-
+            
             for (unsigned i = 0; i <= cnt - req_lines; ++i) {
               if (yVals[i + req_lines - 1].y - yVals[i].y <= max_y_spread) {
-                std::vector<unsigned> clustered_indices;
-                clustered_indices.reserve(cnt);
                 float base_y = yVals[i].y;
+
+                min_r=measurements[yVals[i].idx].r;
+                max_r=min_r;
+                cluster_end_idx = cnt;
+                idx_max=i,idx_min=i, idx_mid=i;
+
                 for(unsigned j = i; j < cnt; ++j) {
                     if (yVals[j].y - base_y <= max_y_spread) {
-                        clustered_indices.push_back(yVals[j].idx);
+                      if (measurements[yVals[j].idx].r<min_r){
+                        min_r=measurements[yVals[j].idx].r;
+                        idx_min=j;
+                      }
+                      else if (measurements[yVals[j].idx].r>max_r){
+                        max_r=measurements[yVals[j].idx].r;
+                        idx_max=j;
+                      }
                     } else {
+                        cluster_end_idx=j;
                         break;
                     }
                 }
+
+                valid_r_spread=0;
+                for(unsigned j = i; j < cluster_end_idx; ++j) {
+                    if (measurements[yVals[j].idx].r - min_r > 5 * Acts::UnitConstants::mm && max_r - measurements[yVals[j].idx].r > 5 * Acts::UnitConstants::mm) {
+                      valid_r_spread=1;
+                      idx_mid=j;
+                      break;
+                    }
+                }
+              
+
+                if (!valid_r_spread || max_r-min_r < 10 * Acts::UnitConstants::mm)
+                  continue;
+
+                std::array<unsigned,3> clustered_indices = {yVals[idx_min].idx,
+                yVals[idx_max].idx, yVals[idx_mid].idx};
 
                 std::sort(clustered_indices.begin(), clustered_indices.end());
 
                 // hashing is added in order to prevent duplication of solutions
                 if (unique_clusters.insert(clustered_indices).second) {
-                  SeedCandidate candidate;
-                  candidate.indices = std::move(clustered_indices);
-                  output.push_back(std::move(candidate));
+                  output.push_back({clustered_indices});
                 }
               }
             }
@@ -443,11 +489,9 @@ void AdaptiveHoughTransformSeeder::makeSeeds(
 
   std::size_t seedIndex = 0;
   for (const SeedCandidate &s : solutions) {
-    std::vector<unsigned> sortedIndices = s.indices;
+    std::array<unsigned,3> sortedIndices = s.indices;
     std::ranges::sort(sortedIndices, [&measurements](unsigned i1, unsigned i2) {
-      const auto &m1 = measurements[i1];
-      const auto &m2 = measurements[i2];
-      return m1.invr > m2.invr;
+      return measurements[i1].r < measurements[i2].r;
     });
 
     if (sortedIndices.size() < 3) {
@@ -458,11 +502,13 @@ void AdaptiveHoughTransformSeeder::makeSeeds(
     unsigned spIndex = 0;
     std::array<std::optional<ConstSpacePointProxy>, 3> sp = {
         std::nullopt, std::nullopt, std::nullopt};
+    float last_r = -1000.0f;
     for (unsigned sidx : sortedIndices) {
       const PreprocessedMeasurement &m = measurements[sidx];
-      sp[spIndex] = spacePoints.at(m.sp);
-      if (spIndex == 0 || std::abs(sp[spIndex]->r() - sp[spIndex - 1]->r()) >
+      if (spIndex == 0 || std::abs(m.r - last_r) >
                               5. * Acts::UnitConstants::mm) {
+        sp[spIndex] = spacePoints.at(m.sp);
+        last_r=m.r;
         spIndex++;
       }
       if (spIndex >= sp.size()) {
@@ -501,11 +547,9 @@ void AdaptiveHoughTransformSeeder::makeSeeds(
 
     seedIndex++;
   }
-  if (skippedCandidatesCounter > 0) {
-    ACTS_INFO("Diagnostic: Skipped " << skippedCandidatesCounter 
+  ACTS_INFO("Diagnostic: Skipped " << skippedCandidatesCounter 
               << " invalid seed candidates (insufficient points) out of " 
               << solutions.size() << " total sections.");
-  }
 }
 
 bool AdaptiveHoughTransformSeeder::passIntersectionsCheck(
@@ -560,6 +604,115 @@ void AdaptiveHoughTransformSeeder::deduplicate(
     temp.push_back(**sPtr);
   }
   input = std::move(temp);
+}
+
+
+void AdaptiveHoughTransformSeeder::processQOverPtPhi_SlidingWindow(
+    const std::vector<Acts::Experimental::HoughAccumulatorSection> &input,
+    std::vector<Phase1Candidate> &output,
+    const std::vector<PreprocessedMeasurement> &measurements) const {
+  
+    std::unordered_set<std::vector<unsigned>, VectorHash> unique_clusters;
+
+    const float max_x_spread = m_cfg.phiMinBinSize * 0.35f; 
+    const unsigned req_lines = m_cfg.threshold;
+
+    struct LinePoint {
+        float x;
+        unsigned idx;
+        bool operator<(const LinePoint& other) const { return x < other.x; }
+    };
+
+    for (const auto &section : input) {
+        const unsigned cnt = section.count();
+        if (cnt < req_lines) continue;
+
+        // 1 y point
+        const float yBottom = section.yBegin();
+        const float yMid = yBottom + section.ySize() * 0.5f;
+        const float check_points[1] = {yMid};
+
+        for (float y_check : check_points) {
+            std::vector<LinePoint> xVals;
+            xVals.reserve(cnt);
+
+            for (unsigned i = 0; i < cnt; ++i) {
+                unsigned meas_idx = section.indices()[i];
+                const auto &m = measurements[meas_idx];
+
+                float denominator = m.invr * m_cfg.inverseA;
+                if (std::abs(denominator) < 1e-9f) continue;
+
+                LinePoint lp;
+                lp.x = m.phi + y_check / denominator;
+                lp.idx = meas_idx;
+                xVals.push_back(lp);
+            }
+
+            const unsigned valid_cnt = xVals.size();
+            if (valid_cnt < req_lines) continue;
+
+            std::sort(xVals.begin(), xVals.end());
+
+            unsigned start = 0;
+            unsigned end = req_lines-1;
+            bool candidate_found = false;
+
+            // for (unsigned i=start+1; i<=end; i++){
+            //   min_invr=std::min(min_invr,measurements[xVals[i].idx].invr);
+            //   max_invr=std::max(max_invr,measurements[xVals[i].idx].invr);
+            // }
+
+            while (end < valid_cnt) {
+                if (xVals[end].x - xVals[start].x <= max_x_spread) {
+                    end++;
+                } else {
+                    if (end - start >= req_lines) {
+                        std::vector<unsigned> clustered_indices;
+                        clustered_indices.reserve(end - start);
+                        for (unsigned k = start; k < end; ++k) {
+                            clustered_indices.push_back(xVals[k].idx);
+                        }
+
+                        std::sort(clustered_indices.begin(), clustered_indices.end());
+
+                        if (unique_clusters.insert(clustered_indices).second) {
+                            Phase1Candidate candidate;
+                            candidate.indices = std::move(clustered_indices);
+                            candidate.zMin = section.history(zSplitMinIndex);
+                            candidate.zWidth = section.history(zSplitWidthIndex);
+                            candidate.cotThetaMin = section.history(cotThetaSplitMinIndex);
+                            candidate.cotThetaWidth = section.history(cotThetaSplitWidthIndex);
+                            output.push_back(std::move(candidate));
+                            candidate_found=true;
+                            break;
+                        }
+                    }
+                    start++;
+                }
+            }
+
+            if (!candidate_found && end - start >= req_lines) {
+                std::vector<unsigned> clustered_indices;
+                clustered_indices.reserve(end - start);
+                for (unsigned k = start; k < end; ++k) {
+                    clustered_indices.push_back(xVals[k].idx);
+                }
+
+                std::sort(clustered_indices.begin(), clustered_indices.end());
+
+                if (unique_clusters.insert(clustered_indices).second) {
+                    Phase1Candidate candidate;
+                    candidate.indices = std::move(clustered_indices);
+                    candidate.zMin = section.history(zSplitMinIndex);
+                    candidate.zWidth = section.history(zSplitWidthIndex);
+                    candidate.cotThetaMin = section.history(cotThetaSplitMinIndex);
+                    candidate.cotThetaWidth = section.history(cotThetaSplitWidthIndex);
+                    output.push_back(std::move(candidate));
+                }
+            }
+        }
+    }
 }
 
 }  // namespace ActsExamples

@@ -145,13 +145,25 @@ parser.add_argument(
     action=argparse.BooleanOptionalAction,
 )
 parser.add_argument(
-    "--aht-max-division", help="Maximal divlvl for classic AHT Drill action", type=int, default=8
+    "--aht-max-division", help="Maximal divlvl for classic AHT Drill action", type=int, default=6
 )
 parser.add_argument(
     "--aht-threshold", help="Threshold value for AHT ExploreParameterSpace", type=int, default=3
 )
 parser.add_argument(
     "--aht-noise", help="noiseThreshold value for AHT ExploreParameterSpace", type=int, default=12
+)
+parser.add_argument(
+    "--div-lvl-ts", 
+    help="Choice of div lvl which sections will be saved to csv", 
+    type=int, 
+    default=0
+)
+parser.add_argument(
+    "--sec-num-ts", 
+    help="Numbers of sections intended to be saved as csv", 
+    type=int, 
+    default=0
 )
 
 
@@ -349,13 +361,15 @@ if args.reco:
     aht_config.threshold = args.aht_threshold
     aht_config.noiseThreshold = args.aht_noise
     
-    aht_config.phiMinBinSize = 3.14 / (2.0 * 257.0)
-    aht_config.qOverPtMinBinSize = 4 * 0.9 / (1.0 * 257.0)
+    aht_config.phiMinBinSize = 2 * 3.14 / 257.0
+    aht_config.qOverPtMinBinSize = 16 * 0.9 / 257.0
     aht_config.qOverPtMin = 1.1
     aht_config.doSecondPhase = True
     aht_config.zMinBinSize = 1 * u.mm
     aht_config.cotThetaMinBinSize = 0.1
     aht_config.deduplicate = True
+    aht_config.div_lvl_to_save = args.div_lvl_ts
+    aht_config.sections_number_to_save = args.sec_num_ts
     addSeeding(
         s,
         trackingGeometry,
